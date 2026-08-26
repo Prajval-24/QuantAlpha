@@ -6,3 +6,4 @@ uvicorn
 streamlit
 plotly
 pytest
+yfinance
