@@ -1,23 +1,13 @@
-from .base import AlphaStrategy
-from .momentum import MomentumStrategy
-from .mean_reversion import MeanReversionStrategy
+from src.alphas.momentum import MomentumStrategy
+from src.alphas.mean_reversion import MeanReversionStrategy
+from src.alphas.ml_strategy import MachineLearningAlphaStrategy
 
-
-STRATEGIES = {
-    "momentum": MomentumStrategy,
-    "mean_reversion": MeanReversionStrategy,
-}
-
-
-def get_strategy(name: str) -> AlphaStrategy:
-    """Create a strategy instance by name."""
-
-    if name not in STRATEGIES:
-        available = ", ".join(STRATEGIES.keys())
-
-        raise ValueError(
-            f"Unknown strategy '{name}'. "
-            f"Available strategies: {available}"
-        )
-
-    return STRATEGIES[name]()
+def get_strategy(strategy_name: str):
+    if strategy_name == "momentum":
+        return MomentumStrategy()
+    elif strategy_name == "mean_reversion":
+        return MeanReversionStrategy()
+    elif strategy_name == "ml_supervised":
+        return MachineLearningAlphaStrategy()
+    else:
+        raise ValueError(f"Unknown strategy name: {strategy_name}")
