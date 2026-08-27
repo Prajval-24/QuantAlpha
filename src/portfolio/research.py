@@ -1,3 +1,4 @@
+from dataclasses import dataclass, field
 import pandas as pd
 
 from src.alphas import get_strategy
@@ -11,7 +12,19 @@ from .construction import (
     equal_weight,
     inverse_volatility_weight,
 )
+from .risk import apply_risk_controls
 from .engine import PortfolioEngine
+
+
+@dataclass
+class PortfolioExperimentConfig:
+    symbols: list[str] = field(default_factory=lambda: ["RELIANCE", "TCS", "INFY"])
+    strategy_name: str = "mean_reversion"
+    portfolio_method: str = "equal_weight"  # "equal_weight" or "inverse_volatility"
+    lookback: int = 20
+    max_weight: float = 0.25
+    max_exposure: float = 1.0
+    transaction_cost: float = 0.001
 
 
 def build_signal_matrix(
@@ -153,6 +166,60 @@ def build_signal_matrix(
     return signal_matrix, return_matrix
 
 
+def run_portfolio_experiment(
+    config: PortfolioExperimentConfig,
+) -> tuple[pd.DataFrame, dict]:
+    """
+    Run a fully configured, reproducible portfolio experiment.
+    Binds strategy, construction, risk controls, and execution into an audited result.
+    """
+    signals, returns = build_signal_matrix(
+        symbols=config.symbols,
+        strategy_name=config.strategy_name,
+    )
+
+    if config.portfolio_method == "equal_weight":
+        weights = equal_weight(signals)
+    elif config.portfolio_method == "inverse_volatility":
+        weights = inverse_volatility_weight(
+            returns=returns,
+            signals=signals,
+            lookback=config.lookback,
+        )
+    else:
+        raise ValueError(
+            f"Unknown portfolio construction method: {config.portfolio_method}"
+        )
+
+    # Enforce risk controls (Single Source of Truth)
+    weights = apply_risk_controls(
+        weights=weights,
+        max_weight=config.max_weight,
+        max_exposure=config.max_exposure,
+    )
+
+    engine = PortfolioEngine(
+        transaction_cost=config.transaction_cost
+    )
+
+    result, metrics = engine.run(
+        returns=returns,
+        weights=weights,
+    )
+
+    metrics["experiment_config"] = {
+        "symbols": config.symbols,
+        "strategy_name": config.strategy_name,
+        "portfolio_method": config.portfolio_method,
+        "lookback": config.lookback,
+        "max_weight": config.max_weight,
+        "max_exposure": config.max_exposure,
+        "transaction_cost": config.transaction_cost,
+    }
+
+    return result, metrics
+
+
 def run_portfolio_research(
     symbols: list[str],
     strategy_name: str,
@@ -161,26 +228,13 @@ def run_portfolio_research(
     """
     Run an equal-weight multi-asset portfolio experiment.
     """
-
-    signals, returns = build_signal_matrix(
+    config = PortfolioExperimentConfig(
         symbols=symbols,
         strategy_name=strategy_name,
+        portfolio_method="equal_weight",
+        transaction_cost=transaction_cost,
     )
-
-    weights = equal_weight(
-        signals
-    )
-
-    engine = PortfolioEngine(
-        transaction_cost=transaction_cost
-    )
-
-    result, metrics = engine.run(
-        returns=returns,
-        weights=weights,
-    )
-
-    return result, metrics
+    return run_portfolio_experiment(config)
 
 
 def run_risk_aware_portfolio_research(
@@ -190,31 +244,16 @@ def run_risk_aware_portfolio_research(
     transaction_cost: float = 0.001,
 ) -> tuple[pd.DataFrame, dict]:
     """
-    Run a portfolio experiment using inverse-volatility
-    position sizing.
+    Run a portfolio experiment using inverse-volatility position sizing.
     """
-
-    signals, returns = build_signal_matrix(
+    config = PortfolioExperimentConfig(
         symbols=symbols,
         strategy_name=strategy_name,
-    )
-
-    weights = inverse_volatility_weight(
-        returns=returns,
-        signals=signals,
+        portfolio_method="inverse_volatility",
         lookback=lookback,
+        transaction_cost=transaction_cost,
     )
-
-    engine = PortfolioEngine(
-        transaction_cost=transaction_cost
-    )
-
-    result, metrics = engine.run(
-        returns=returns,
-        weights=weights,
-    )
-
-    return result, metrics
+    return run_portfolio_experiment(config)
 
 
 def compare_portfolio_methods(
