@@ -21,6 +21,12 @@ def generate_walk_forward_splits(
     """
     Generate expanding-window walk-forward splits.
 
+    CRITICAL FIX: Splitting is strictly based on unique trading
+    dates rather than absolute row counts. This guarantees that
+    cross-sectional multi-asset data for a single day is never
+    split across the train and test sets, which would leak
+    future factor information.
+
     The final incomplete test window is discarded.
     """
 
@@ -49,48 +55,64 @@ def generate_walk_forward_splits(
             "train_size + test_size cannot exceed 1."
         )
 
-    data = (
-        data
-        .sort_values("Date")
-        .reset_index(drop=True)
+    if "Date" not in data.columns:
+        raise ValueError(
+            "Data must contain a 'Date' column for temporal splitting."
+        )
+
+    # ----------------------------------------------------
+    # Calculate lengths based on unique chronological dates
+    # ----------------------------------------------------
+
+    unique_dates = (
+        data["Date"]
+        .sort_values()
+        .unique()
     )
 
-    n = len(data)
+    n_dates = len(unique_dates)
 
-    train_end = int(
-        n * train_size
+    train_length = int(
+        n_dates * train_size
     )
 
     test_length = max(
         1,
-        int(n * test_size)
+        int(n_dates * test_size)
     )
 
     step_length = max(
         1,
-        int(n * step_size)
+        int(n_dates * step_size)
     )
 
     splits = []
 
-    while train_end < n:
+    train_end_idx = train_length
 
-        test_start = train_end
+    # ----------------------------------------------------
+    # Generate windows
+    # ----------------------------------------------------
+
+    while train_end_idx < n_dates:
+
+        test_end_idx = train_end_idx + test_length
 
         # Do not create an incomplete final test window.
-        test_end = (
-            test_start + test_length
-        )
-
-        if test_end > n:
+        if test_end_idx > n_dates:
             break
 
-        train = data.iloc[
-            :train_end
+        train_cutoff = unique_dates[train_end_idx - 1]
+        test_start_date = unique_dates[train_end_idx]
+        test_end_date = unique_dates[test_end_idx - 1]
+
+        train = data[
+            data["Date"] <= train_cutoff
         ].copy()
 
-        test = data.iloc[
-            test_start:test_end
+        test = data[
+            (data["Date"] >= test_start_date)
+            & (data["Date"] <= test_end_date)
         ].copy()
 
         splits.append(
@@ -100,7 +122,7 @@ def generate_walk_forward_splits(
             )
         )
 
-        train_end += step_length
+        train_end_idx += step_length
 
     return splits
 

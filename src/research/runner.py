@@ -8,6 +8,7 @@ from src.data.loader import (
     TICKERS,
     download_stock_data,
     load_raw_data,
+    save_raw_data,  # FIX: Added missing import
 )
 from src.data.preprocessing import (
     add_basic_features,
@@ -50,6 +51,10 @@ def run_single_experiment(
         )
 
         data = download_stock_data(symbol)
+
+        # FIX: Actually save the data to cache so subsequent
+        # runs don't hit the API repeatedly.
+        save_raw_data(data, symbol)
 
     # --------------------------------------------------
     # 2. Validate market data
@@ -242,6 +247,7 @@ def load_research_results(
         )
 
     return pd.read_csv(path)
+
 
 def summarize_research(
     results: pd.DataFrame,

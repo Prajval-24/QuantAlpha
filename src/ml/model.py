@@ -1,3 +1,4 @@
+import numpy as np
 import pandas as pd
 
 from sklearn.linear_model import LogisticRegression
@@ -9,7 +10,8 @@ from .features import FEATURE_COLUMNS
 
 class MLAlphaModel:
     """
-    Logistic Regression model for next-day return direction.
+    Logistic Regression model for predicting
+    next-day return direction.
     """
 
     def __init__(
@@ -32,6 +34,14 @@ class MLAlphaModel:
                 "C must be greater than zero."
             )
 
+        if max_iter < 1:
+            raise ValueError(
+                "max_iter must be at least 1."
+            )
+
+        self.C = float(C)
+        self.max_iter = int(max_iter)
+
         self.model = Pipeline(
             [
                 (
@@ -41,8 +51,8 @@ class MLAlphaModel:
                 (
                     "classifier",
                     LogisticRegression(
-                        C=C,
-                        max_iter=max_iter,
+                        C=self.C,
+                        max_iter=self.max_iter,
                         random_state=42,
                     ),
                 ),
@@ -51,14 +61,22 @@ class MLAlphaModel:
 
         self.is_fitted = False
 
-    def fit(
+    def _validate_features(
         self,
         X: pd.DataFrame,
-        y: pd.Series,
-    ) -> "MLAlphaModel":
+    ) -> None:
         """
-        Fit the model on historical training data.
+        Validate the feature matrix before passing
+        it to sklearn.
         """
+
+        if not isinstance(
+            X,
+            pd.DataFrame,
+        ):
+            raise TypeError(
+                "X must be a pandas DataFrame."
+            )
 
         missing = [
             column
@@ -71,14 +89,70 @@ class MLAlphaModel:
                 f"Missing required features: {missing}"
             )
 
+        values = (
+            X[FEATURE_COLUMNS]
+            .to_numpy(dtype=float)
+        )
+
+        if not np.isfinite(values).all():
+            raise ValueError(
+                "X contains NaN or infinite values."
+            )
+
+    def fit(
+        self,
+        X: pd.DataFrame,
+        y: pd.Series,
+    ) -> "MLAlphaModel":
+        """
+        Fit the model using historical training data.
+        """
+
+        self._validate_features(
+            X
+        )
+
+        y = pd.Series(
+            y,
+            index=X.index,
+        )
+
         if len(X) != len(y):
             raise ValueError(
-                "X and y must have the same number of rows."
+                "X and y must have the same "
+                "number of rows."
+            )
+
+        if y.isna().any():
+            raise ValueError(
+                "Target contains NaN values."
+            )
+
+        y_values = (
+            y.to_numpy()
+        )
+
+        unique_classes = (
+            np.unique(y_values)
+        )
+
+        if not np.isin(
+            unique_classes,
+            [0, 1],
+        ).all():
+            raise ValueError(
+                "Target must contain only 0 and 1."
+            )
+
+        if len(unique_classes) < 2:
+            raise ValueError(
+                "Training target must contain "
+                "both classes: 0 and 1."
             )
 
         self.model.fit(
             X[FEATURE_COLUMNS],
-            y,
+            y.astype(int),
         )
 
         self.is_fitted = True
@@ -90,13 +164,18 @@ class MLAlphaModel:
         X: pd.DataFrame,
     ) -> pd.Series:
         """
-        Predict probability of a positive next-day return.
+        Predict probability of a positive
+        next-day return.
         """
 
         if not self.is_fitted:
             raise RuntimeError(
                 "Model must be fitted before prediction."
             )
+
+        self._validate_features(
+            X
+        )
 
         probabilities = (
             self.model
@@ -117,12 +196,22 @@ class MLAlphaModel:
     ) -> pd.Series:
         """
         Predict binary next-day direction.
+
+        Returns
+        -------
+        pd.Series
+            1 = positive next-day return
+            0 = non-positive next-day return
         """
 
         if not self.is_fitted:
             raise RuntimeError(
                 "Model must be fitted before prediction."
             )
+
+        self._validate_features(
+            X
+        )
 
         predictions = (
             self.model
@@ -132,7 +221,7 @@ class MLAlphaModel:
         )
 
         return pd.Series(
-            predictions,
+            predictions.astype(int),
             index=X.index,
             name="Prediction",
         )
@@ -141,7 +230,12 @@ class MLAlphaModel:
         self,
     ) -> pd.Series:
         """
-        Return standardized model coefficients.
+        Return coefficients from the logistic
+        regression classifier.
+
+        Features are standardized by the pipeline,
+        so coefficients are on standardized feature
+        units.
         """
 
         if not self.is_fitted:

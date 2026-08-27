@@ -1,6 +1,5 @@
 from pathlib import Path
 import sqlite3
-
 import pandas as pd
 
 
@@ -85,18 +84,14 @@ def insert_market_data(data: pd.DataFrame) -> None:
 
     connection = get_connection()
 
-    records = [
-        (
-            row["Date"].strftime("%Y-%m-%d"),
-            row["Symbol"],
-            float(row["Open"]),
-            float(row["High"]),
-            float(row["Low"]),
-            float(row["Close"]),
-            float(row["Volume"]),
-        )
-        for _, row in data.iterrows()
-    ]
+    # FIX: Vectorized operation to prevent massive performance bottlenecks from iterrows()
+    # FIX: Safe date coercion prevents string-formatting crashes on raw inputs.
+    insert_df = data.copy()
+    insert_df["Date"] = pd.to_datetime(insert_df["Date"]).dt.strftime("%Y-%m-%d")
+
+    records = insert_df[
+        ["Date", "Symbol", "Open", "High", "Low", "Close", "Volume"]
+    ].to_numpy().tolist()
 
     connection.executemany(
         """

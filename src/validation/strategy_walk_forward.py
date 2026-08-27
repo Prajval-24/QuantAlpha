@@ -2,7 +2,10 @@ import pandas as pd
 import numpy as np
 
 from src.ml.model import MLAlphaModel
-from src.ml.features import FEATURE_COLUMNS
+from src.ml.features import (
+    FEATURE_COLUMNS,
+    build_ml_features,
+)
 from src.alphas.mean_reversion import MeanReversionStrategy
 from src.validation.walk_forward import (
     generate_walk_forward_splits,
@@ -132,8 +135,37 @@ def run_walk_forward_strategy(
     Returns one row per out-of-sample observation.
     """
 
+    data = data.copy()
+
+    if "Date" in data.columns:
+        data = (
+            data
+            .sort_values("Date")
+            .reset_index(drop=True)
+        )
+
+    # ------------------------------------------
+    # 1. Calculate returns globally
+    # ------------------------------------------
+    # We must calculate forward returns on the entire
+    # continuous unbroken dataset BEFORE slicing or
+    # dropping NaN ML targets. Otherwise, .shift(-1)
+    # jumps across missing dates and corrupts the returns.
+    data["Forward_Return"] = calculate_forward_returns(data)
+
+    # ------------------------------------------
+    # 2. Build ML Features
+    # ------------------------------------------
+    data = build_ml_features(data)
+
+    # ------------------------------------------
+    # 3. Build Strategy Features
+    # ------------------------------------------
     data = prepare_strategy_data(data)
 
+    # ------------------------------------------
+    # 4. Generate Splits
+    # ------------------------------------------
     splits = generate_walk_forward_splits(data)
 
     validate_walk_forward_splits(splits)
@@ -258,9 +290,8 @@ def run_walk_forward_strategy(
         # Forward returns
         # ------------------------------------------
 
-        forward_returns = (
-            calculate_forward_returns(test)
-        )
+        # Retrieve the safely pre-calculated forward returns
+        forward_returns = test["Forward_Return"]
 
         # ------------------------------------------
         # Strategy returns

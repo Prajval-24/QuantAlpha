@@ -1,8 +1,5 @@
 import pandas as pd
-from .construction import (
-    equal_weight,
-    inverse_volatility_weight,
-)
+
 from src.alphas import get_strategy
 from src.data.loader import load_raw_data
 from src.data.preprocessing import (
@@ -10,7 +7,10 @@ from src.data.preprocessing import (
     validate_market_data,
 )
 
-from .construction import equal_weight
+from .construction import (
+    equal_weight,
+    inverse_volatility_weight,
+)
 from .engine import PortfolioEngine
 
 
@@ -19,12 +19,36 @@ def build_signal_matrix(
     strategy_name: str,
 ) -> tuple[pd.DataFrame, pd.DataFrame]:
     """
-    Build aligned signal and return matrices
-    for multiple assets.
+    Build aligned signal and return matrices for multiple assets.
+
+    The portfolio research layer uses only dates for which every
+    requested asset has a genuine market observation.
+
+    Signals:
+        1 = long
+        0 = no position
+
+    Returns:
+        Daily close-to-close returns for each asset.
     """
 
-    signals = {}
-    returns = {}
+    if not symbols:
+        raise ValueError(
+            "symbols cannot be empty."
+        )
+
+    if len(set(symbols)) != len(symbols):
+        raise ValueError(
+            "symbols must not contain duplicates."
+        )
+
+    if not strategy_name:
+        raise ValueError(
+            "strategy_name cannot be empty."
+        )
+
+    signals: dict[str, pd.Series] = {}
+    returns: dict[str, pd.Series] = {}
 
     strategy = get_strategy(
         strategy_name
@@ -32,43 +56,99 @@ def build_signal_matrix(
 
     for symbol in symbols:
 
-        data = load_raw_data(symbol)
+        data = load_raw_data(
+            symbol
+        )
 
-        validate_market_data(data)
+        validate_market_data(
+            data
+        )
 
-        data = add_basic_features(data)
+        data = add_basic_features(
+            data
+        )
 
-        data = strategy.generate_signal(data)
+        data = strategy.generate_signal(
+            data
+        )
 
-        data = data.set_index("Date")
+        data = (
+            data
+            .sort_values("Date")
+            .set_index("Date")
+        )
 
-        signals[symbol] = data["Signal"]
+        signals[symbol] = (
+            data["Signal"]
+            .astype(float)
+        )
 
-        returns[symbol] = data["Close"].pct_change()
+        returns[symbol] = (
+            data["Close"]
+            .pct_change()
+            .astype(float)
+        )
 
     signal_matrix = pd.DataFrame(
         signals
-    ).fillna(0)
+    )
 
     return_matrix = pd.DataFrame(
         returns
-    ).fillna(0)
+    )
 
-    # Keep only dates where all assets
-    # have aligned observations.
+    # --------------------------------------------------
+    # Align on dates where EVERY asset has real data.
+    # --------------------------------------------------
+
+    valid_signal_dates = (
+        signal_matrix
+        .dropna()
+        .index
+    )
+
+    valid_return_dates = (
+        return_matrix
+        .dropna()
+        .index
+    )
+
     common_index = (
-        signal_matrix.index
-        .intersection(return_matrix.index)
+        valid_signal_dates
+        .intersection(valid_return_dates)
         .sort_values()
     )
 
-    signal_matrix = signal_matrix.loc[
-        common_index
-    ]
+    if common_index.empty:
+        raise ValueError(
+            "No common dates exist across all requested assets."
+        )
 
-    return_matrix = return_matrix.loc[
-        common_index
-    ]
+    signal_matrix = (
+        signal_matrix
+        .loc[common_index]
+        .copy()
+    )
+
+    return_matrix = (
+        return_matrix
+        .loc[common_index]
+        .copy()
+    )
+
+    # --------------------------------------------------
+    # Final numerical safety checks.
+    # --------------------------------------------------
+
+    if signal_matrix.isna().any().any():
+        raise ValueError(
+            "Signal matrix contains missing values after alignment."
+        )
+
+    if return_matrix.isna().any().any():
+        raise ValueError(
+            "Return matrix contains missing values after alignment."
+        )
 
     return signal_matrix, return_matrix
 
@@ -79,7 +159,7 @@ def run_portfolio_research(
     transaction_cost: float = 0.001,
 ) -> tuple[pd.DataFrame, dict]:
     """
-    Run a multi-asset portfolio experiment.
+    Run an equal-weight multi-asset portfolio experiment.
     """
 
     signals, returns = build_signal_matrix(
@@ -101,6 +181,7 @@ def run_portfolio_research(
     )
 
     return result, metrics
+
 
 def run_risk_aware_portfolio_research(
     symbols: list[str],
@@ -135,6 +216,7 @@ def run_risk_aware_portfolio_research(
 
     return result, metrics
 
+
 def compare_portfolio_methods(
     symbols: list[str],
     strategies: list[str] | None = None,
@@ -146,19 +228,29 @@ def compare_portfolio_methods(
     across multiple alpha strategies.
     """
 
+    if not symbols:
+        raise ValueError(
+            "symbols cannot be empty."
+        )
+
     if strategies is None:
         strategies = [
             "momentum",
             "mean_reversion",
         ]
 
+    if not strategies:
+        raise ValueError(
+            "strategies cannot be empty."
+        )
+
     results = []
 
     for strategy_name in strategies:
 
-        # ----------------------------------------------
+        # --------------------------------------------------
         # Equal-weight portfolio
-        # ----------------------------------------------
+        # --------------------------------------------------
 
         _, equal_metrics = run_portfolio_research(
             symbols=symbols,
@@ -197,9 +289,9 @@ def compare_portfolio_methods(
             }
         )
 
-        # ----------------------------------------------
+        # --------------------------------------------------
         # Inverse-volatility portfolio
-        # ----------------------------------------------
+        # --------------------------------------------------
 
         _, inverse_metrics = (
             run_risk_aware_portfolio_research(
@@ -241,4 +333,6 @@ def compare_portfolio_methods(
             }
         )
 
-    return pd.DataFrame(results)
+    return pd.DataFrame(
+        results
+    )

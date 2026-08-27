@@ -1,3 +1,4 @@
+from datetime import date, timedelta
 from pathlib import Path
 
 import pandas as pd
@@ -20,7 +21,7 @@ def download_stock_data(
     start: str = "2021-01-01",
     end: str | None = None,
 ) -> pd.DataFrame:
-    """Download historical daily OHLCV data for a supported stock."""
+    """Download complete historical daily OHLCV data."""
 
     if symbol not in TICKERS:
         raise ValueError(
@@ -29,6 +30,16 @@ def download_stock_data(
         )
 
     ticker = TICKERS[symbol]
+
+    # yfinance treats `end` as exclusive.
+    # Using tomorrow as the end date when the user explicitly
+    # provides an end date preserves that requested range.
+    #
+    # When end=None, use tomorrow so that the current completed
+    # trading day is included while avoiding a future-date issue.
+    if end is None:
+        end_date = date.today() + timedelta(days=1)
+        end = end_date.isoformat()
 
     data = yf.download(
         ticker,
@@ -40,7 +51,9 @@ def download_stock_data(
     )
 
     if data.empty:
-        raise ValueError(f"No market data returned for {symbol}.")
+        raise ValueError(
+            f"No market data returned for {symbol}."
+        )
 
     data = data.reset_index()
 
@@ -58,7 +71,8 @@ def download_stock_data(
     ]
 
     missing_columns = [
-        column for column in required_columns
+        column
+        for column in required_columns
         if column not in data.columns
     ]
 
@@ -69,26 +83,75 @@ def download_stock_data(
 
     data = data[required_columns].copy()
 
-    data["Symbol"] = symbol
-    data["Date"] = pd.to_datetime(data["Date"])
+    # ---------------------------------------------------------
+    # FIX: Drop rows where Yahoo Finance returned NaN prices
+    # (e.g., market holidays, trading halts)
+    # ---------------------------------------------------------
+    data = data.dropna(subset=["Open", "High", "Low", "Close"]).copy()
 
-    data = data.sort_values("Date").reset_index(drop=True)
+    data["Symbol"] = symbol
+
+    # ---------------------------------------------------------
+    # FIX: Standardize timezone to prevent downstream merge crashes
+    # ---------------------------------------------------------
+    data["Date"] = pd.to_datetime(data["Date"]).dt.tz_localize(None)
+
+    # Remove any incomplete current-day bar that may be returned
+    # by the data provider.
+    today = pd.Timestamp.today().normalize()
+
+    data = data[
+        data["Date"].dt.normalize() < today
+    ].copy()
+
+    data = (
+        data
+        .sort_values("Date")
+        .drop_duplicates(subset="Date")
+        .reset_index(drop=True)
+    )
+
+    if data.empty:
+        raise ValueError(
+            f"No completed daily market data available for {symbol}."
+        )
 
     return data
 
 
-def save_raw_data(data: pd.DataFrame, symbol: str) -> Path:
+def save_raw_data(
+    data: pd.DataFrame,
+    symbol: str,
+) -> Path:
     """Save downloaded market data locally."""
 
-    RAW_DATA_DIR.mkdir(parents=True, exist_ok=True)
+    if symbol not in TICKERS:
+        raise ValueError(
+            f"Unsupported symbol: {symbol}. "
+            f"Available symbols: {list(TICKERS.keys())}"
+        )
 
-    file_path = RAW_DATA_DIR / f"{symbol.lower()}.csv"
+    RAW_DATA_DIR.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
 
-    data.to_csv(file_path, index=False)
+    file_path = (
+        RAW_DATA_DIR
+        / f"{symbol.lower()}.csv"
+    )
+
+    data.to_csv(
+        file_path,
+        index=False,
+    )
 
     return file_path
 
-def load_raw_data(symbol: str) -> pd.DataFrame:
+
+def load_raw_data(
+    symbol: str,
+) -> pd.DataFrame:
     """Load previously downloaded market data from local storage."""
 
     if symbol not in TICKERS:
@@ -97,15 +160,29 @@ def load_raw_data(symbol: str) -> pd.DataFrame:
             f"Available symbols: {list(TICKERS.keys())}"
         )
 
-    file_path = RAW_DATA_DIR / f"{symbol.lower()}.csv"
+    file_path = (
+        RAW_DATA_DIR
+        / f"{symbol.lower()}.csv"
+    )
 
     if not file_path.exists():
         raise FileNotFoundError(
             f"No local data found for {symbol}: {file_path}"
         )
 
-    data = pd.read_csv(file_path)
+    data = pd.read_csv(
+        file_path
+    )
 
-    data["Date"] = pd.to_datetime(data["Date"])
+    data["Date"] = pd.to_datetime(
+        data["Date"]
+    )
+
+    data = (
+        data
+        .sort_values("Date")
+        .drop_duplicates(subset="Date")
+        .reset_index(drop=True)
+    )
 
     return data
