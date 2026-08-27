@@ -62,27 +62,7 @@ def equal_weight(
 ) -> pd.DataFrame:
     """
     Allocate equal weight across all active long positions.
-
-    Parameters
-    ----------
-    signals:
-        DataFrame where columns are asset symbols and values are
-        trading signals:
-
-            1 = long
-            0 = no position
-
-    Returns
-    -------
-    pd.DataFrame
-        Portfolio weights with the same index and columns as signals.
-
-    Notes
-    -----
-    This portfolio construction is intentionally long-only.
-    Short signals are rejected rather than silently discarded.
     """
-
     _validate_long_only_signals(signals)
 
     active_count = signals.sum(axis=1)
@@ -102,34 +82,7 @@ def inverse_volatility_weight(
 ) -> pd.DataFrame:
     """
     Allocate capital using inverse-volatility weighting.
-
-    Assets with lower recent volatility receive higher weight.
-
-        Weight_i ∝ 1 / volatility_i
-
-    Only assets with an active long signal receive capital.
-
-    Parameters
-    ----------
-    returns:
-        Historical asset returns. Rows must be chronological and
-        columns must correspond to signals.
-
-    signals:
-        Long-only trading signals:
-
-            1 = long
-            0 = no position
-
-    lookback:
-        Number of observations used to estimate volatility.
-
-    Returns
-    -------
-    pd.DataFrame
-        Portfolio weights with the same shape as signals.
     """
-
     if not isinstance(returns, pd.DataFrame):
         raise TypeError(
             "Returns must be a pandas DataFrame."
@@ -216,15 +169,7 @@ def validate_weights(
 ) -> None:
     """
     Validate long-only portfolio weights.
-
-    Ensures:
-    - weights are finite
-    - no materially negative weights
-    - total gross exposure does not exceed 100%
-
-    Cash is permitted, so total exposure may be below 100%.
     """
-
     if not isinstance(weights, pd.DataFrame):
         raise TypeError(
             "Weights must be a pandas DataFrame."
@@ -259,3 +204,82 @@ def validate_weights(
         raise ValueError(
             "Portfolio exposure exceeds 100%."
         )
+
+
+def volatility_target_weight(
+    returns: pd.DataFrame,
+    signals: pd.DataFrame,
+    target_volatility: float = 0.15,
+    lookback: int = 20,
+    periods_per_year: int = 252,
+) -> pd.DataFrame:
+    """
+    Construct portfolio weights scaled to target a constant annualized volatility.
+    """
+    base_weights = inverse_volatility_weight(
+        returns=returns, signals=signals, lookback=lookback
+    )
+    
+    # Compute rolling sample covariance matrix and portfolio variance correctly: w^T * Cov * w
+    # We estimate rolling covariance using historical returns over the lookback window
+    scaled_weights_list = []
+    
+    # Loop over rolling windows safely to avoid look-ahead bias and matrix shape crashes
+    for i in range(len(returns)):
+        if i < lookback:
+            scaled_weights_list.append(base_weights.iloc[i] * 0.0)
+            continue
+            
+        window_returns = returns.iloc[i - lookback : i]
+        cov_matrix = window_returns.cov() * periods_per_year
+        w = base_weights.iloc[i].to_numpy(dtype=float)
+        
+        # Realized annualized portfolio variance = w^T * Cov * w
+        port_var = np.dot(w.T, np.dot(cov_matrix.to_numpy(), w))
+        port_vol = np.sqrt(max(port_var, 1e-12))
+        
+        # Scaling factor = Target Vol / Realized Vol (capped at 2.0x leverage)
+        scaling_factor = min(target_volatility / port_vol, 2.0) if port_vol > 0 else 1.0
+        
+        scaled_weights_list.append(base_weights.iloc[i] * scaling_factor)
+        
+    scaled_weights = pd.DataFrame(scaled_weights_list, index=returns.index)
+    return scaled_weights.fillna(0.0)
+
+
+def maximum_diversification_weight(
+    returns: pd.DataFrame,
+    signals: pd.DataFrame,
+    lookback: int = 60,
+) -> pd.DataFrame:
+    """
+    Construct weights that maximize the diversification ratio.
+    """
+    inv_vol = inverse_volatility_weight(
+        returns=returns, signals=signals, lookback=lookback
+    )
+    
+    adjusted_weights_list = []
+    
+    for i in range(len(returns)):
+        if i < lookback:
+            adjusted_weights_list.append(inv_vol.iloc[i] * 0.0)
+            continue
+            
+        window_returns = returns.iloc[i - lookback : i]
+        corr_matrix = window_returns.corr().fillna(0.0)
+        
+        # Average correlation per asset relative to others
+        avg_corr = corr_matrix.mean(axis=1)
+        div_factor = 1.0 / (1.0 + avg_corr.clip(lower=0.0))
+        
+        row_weight = inv_vol.iloc[i] * div_factor
+        total_w = row_weight.sum()
+        
+        if total_w > 0:
+            row_weight = row_weight / total_w
+            
+        adjusted_weights_list.append(row_weight)
+        
+    adjusted_weights = pd.DataFrame(adjusted_weights_list, index=returns.index)
+    return adjusted_weights.fillna(0.0)
